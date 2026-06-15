@@ -41,44 +41,40 @@ FUNCTION_NODE_TYPES = {
 
 def _load_ts_language(lang_name):
     """Return a tree-sitter Language for lang_name, or None if not installed."""
+    specs = {
+        "python": ("tree_sitter_python", "language"),
+        "javascript": ("tree_sitter_javascript", "language"),
+        "typescript": ("tree_sitter_typescript", "language_typescript"),
+        "tsx": ("tree_sitter_typescript", "language_tsx"),
+        "java": ("tree_sitter_java", "language"),
+        "go": ("tree_sitter_go", "language"),
+        "rust": ("tree_sitter_rust", "language"),
+        "c": ("tree_sitter_c", "language"),
+        "cpp": ("tree_sitter_cpp", "language"),
+        "c_sharp": ("tree_sitter_c_sharp", "language"),
+        "ruby": ("tree_sitter_ruby", "language"),
+    }
+
+    aliases = {
+        "js": "javascript",
+        "ts": "typescript",
+        "csharp": "c_sharp",
+        "cs": "c_sharp",
+        "c++": "cpp",
+    }
+
+    lang_name = aliases.get(lang_name, lang_name)
+    spec = specs.get(lang_name)
+    if spec is None:
+        return None
+
+    module_name, fn_name = spec
+
     try:
-        from tree_sitter import Language
-        if lang_name == 'python':
-            import tree_sitter_python as m
-            return Language(m.language())
-        elif lang_name in ('javascript',):
-            import tree_sitter_javascript as m
-            return Language(m.language())
-        elif lang_name == 'typescript':
-            import tree_sitter_typescript as m
-            return Language(m.language_typescript())
-        elif lang_name == 'tsx':
-            import tree_sitter_typescript as m
-            return Language(m.language_tsx())
-        elif lang_name == 'java':
-            import tree_sitter_java as m
-            return Language(m.language())
-        elif lang_name == 'go':
-            import tree_sitter_go as m
-            return Language(m.language())
-        elif lang_name == 'rust':
-            import tree_sitter_rust as m
-            return Language(m.language())
-        elif lang_name == 'c':
-            import tree_sitter_c as m
-            return Language(m.language())
-        elif lang_name == 'cpp':
-            import tree_sitter_cpp as m
-            return Language(m.language())
-        elif lang_name == 'c_sharp':
-            import tree_sitter_c_sharp as m
-            return Language(m.language())
-        elif lang_name == 'ruby':
-            import tree_sitter_ruby as m
-            return Language(m.language())
+        module = __import__(module_name)
+        return getattr(module, fn_name)()
     except (ImportError, AttributeError):
-        pass
-    return None
+        return None
 
 
 class Source2Vec:
