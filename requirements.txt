@@ -1,8 +1,17 @@
-gensim==4.1.2
-nltk==3.6.3
-networkx==2.6.3
-javalang==0.13.0
-torch==1.9.0
-torch-geometric==2.0.1
-code2vec==1.1.1
-PyGithub
+torch>=2.0.0
+torch-geometric>=2.0.0
+networkx>=2.5
+transformers>=4.30.0
+tree-sitter>=0.22.0
+
+# Tree-sitter language grammars — install the ones you need
+tree-sitter-python
+tree-sitter-javascript
+tree-sitter-typescript
+tree-sitter-java
+tree-sitter-go
+tree-sitter-rust
+tree-sitter-c
+tree-sitter-cpp
+tree-sitter-c-sharp
+tree-sitter-ruby

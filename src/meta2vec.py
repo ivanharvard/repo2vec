@@ -2,64 +2,72 @@
 
 import os
 import numpy as np
-from gensim.models.doc2vec import Doc2Vec, TaggedDocument
-from gensim.utils import simple_preprocess
-from nltk.corpus import stopwords
-from nltk.stem import WordNetLemmatizer
+import torch
+from transformers import AutoTokenizer, AutoModel
+
 
 class Meta2Vec:
-    def __init__(self, repo_path, vector_size):
+    """Embeds repository metadata (README, description, topics) via mean-pooled BERT.
+
+    Default model outputs 384 dims. Set vector_size=384 for lossless embeddings;
+    smaller values truncate, larger values zero-pad.
+    """
+
+    DEFAULT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
+    def __init__(self, repo_path, vector_size, model_name=None):
         self.repo_path = repo_path
         self.vector_size = vector_size
-        self.stop_words = set(stopwords.words('english'))
-        self.lemmatizer = WordNetLemmatizer()
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        model_name = model_name or self.DEFAULT_MODEL
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModel.from_pretrained(model_name).to(self.device)
+        self.model.eval()
 
     def generate(self):
-        metadata = self.extract_metadata()
-        processed_metadata = self.preprocess_text(metadata)
-        
-        documents = [TaggedDocument(doc, [i]) for i, doc in enumerate(processed_metadata)]
-        model = Doc2Vec(documents, vector_size=self.vector_size, window=5, min_count=1, workers=4, epochs=100)
-        
-        return model.infer_vector(processed_metadata)
+        text = self._extract_metadata()
+        if not text.strip():
+            return np.zeros(self.vector_size)
+        return self._resize(self._embed(text))
 
-    def extract_metadata(self):
-        metadata = {}
-        
-        # Extract title (repository name)
-        metadata['title'] = os.path.basename(self.repo_path)
-        
-        # Extract description (from a DESCRIPTION file if it exists)
-        description_file = os.path.join(self.repo_path, 'DESCRIPTION')
-        if os.path.exists(description_file):
-            with open(description_file, 'r', encoding='utf-8', errors='ignore') as f:
-                metadata['description'] = f.read().strip()
-        
-        # Extract topics/tags (from a TOPICS file if it exists)
-        topics_file = os.path.join(self.repo_path, 'TOPICS')
-        if os.path.exists(topics_file):
-            with open(topics_file, 'r', encoding='utf-8', errors='ignore') as f:
-                metadata['topics'] = f.read().strip()
-        
-        # Extract README content
-        readme_content = self.get_readme_content()
-        if readme_content:
-            metadata['readme'] = readme_content
-        
-        # Combine all metadata into a single string
-        combined_metadata = ' '.join(str(value) for value in metadata.values() if value)
-        return combined_metadata
+    def _extract_metadata(self):
+        parts = [os.path.basename(self.repo_path)]
+        for fname in ('DESCRIPTION', 'TOPICS'):
+            fpath = os.path.join(self.repo_path, fname)
+            if os.path.exists(fpath):
+                with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
+                    parts.append(f.read().strip())
+        readme = self._get_readme()
+        if readme:
+            parts.append(readme)
+        return ' '.join(parts)
 
-    def get_readme_content(self):
-        readme_files = ['README.md', 'README.txt', 'README']
-        for filename in readme_files:
-            file_path = os.path.join(self.repo_path, filename)
-            if os.path.exists(file_path):
-                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+    def _get_readme(self):
+        for fname in ('README.md', 'README.txt', 'README'):
+            fpath = os.path.join(self.repo_path, fname)
+            if os.path.exists(fpath):
+                with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
                     return f.read()
         return None
 
-    def preprocess_text(self, text):
-        tokens = simple_preprocess(text)
-        lemmatized = [self.lemmatizer.lemmatize(word) for word in tokens if word not in self.stop_words]
-        return lemmatized
+    def _embed(self, text):
+        inputs = self.tokenizer(
+            text,
+            return_tensors='pt',
+            truncation=True,
+            max_length=512,
+            padding=True,
+        ).to(self.device)
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+        mask = inputs['attention_mask'].unsqueeze(-1).expand(outputs.last_hidden_state.size()).float()
+        pooled = (outputs.last_hidden_state * mask).sum(1) / mask.sum(1).clamp(min=1e-9)
+        return pooled.squeeze().cpu().numpy()
+
+    def _resize(self, vector):
+        n = len(vector)
+        if n == self.vector_size:
+            return vector
+        if n > self.vector_size:
+            return vector[:self.vector_size]
+        return np.pad(vector, (0, self.vector_size - n))

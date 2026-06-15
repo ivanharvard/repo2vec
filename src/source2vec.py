@@ -2,63 +2,182 @@
 
 import os
 import numpy as np
-import javalang
-from javalang import parse
-from javalang.ast import Node
-from code2vec.model import Code2VecModel
-from code2vec.config import Config
+import torch
+from transformers import AutoTokenizer, AutoModel
+
+
+EXTENSION_TO_LANGUAGE = {
+    '.py': 'python',
+    '.js': 'javascript',
+    '.jsx': 'javascript',
+    '.ts': 'typescript',
+    '.tsx': 'tsx',
+    '.java': 'java',
+    '.go': 'go',
+    '.rs': 'rust',
+    '.c': 'c',
+    '.h': 'c',
+    '.cpp': 'cpp',
+    '.cc': 'cpp',
+    '.hpp': 'cpp',
+    '.cs': 'c_sharp',
+    '.rb': 'ruby',
+}
+
+FUNCTION_NODE_TYPES = {
+    'python': {'function_definition'},
+    'javascript': {'function_declaration', 'method_definition', 'arrow_function'},
+    'typescript': {'function_declaration', 'method_definition', 'arrow_function'},
+    'tsx': {'function_declaration', 'method_definition', 'arrow_function'},
+    'java': {'method_declaration', 'constructor_declaration'},
+    'go': {'function_declaration', 'method_declaration'},
+    'rust': {'function_item'},
+    'c': {'function_definition'},
+    'cpp': {'function_definition'},
+    'c_sharp': {'method_declaration', 'constructor_declaration'},
+    'ruby': {'method', 'singleton_method'},
+}
+
+
+def _load_ts_language(lang_name):
+    """Return a tree-sitter Language for lang_name, or None if not installed."""
+    try:
+        from tree_sitter import Language
+        if lang_name == 'python':
+            import tree_sitter_python as m
+            return Language(m.language())
+        elif lang_name in ('javascript',):
+            import tree_sitter_javascript as m
+            return Language(m.language())
+        elif lang_name == 'typescript':
+            import tree_sitter_typescript as m
+            return Language(m.language_typescript())
+        elif lang_name == 'tsx':
+            import tree_sitter_typescript as m
+            return Language(m.language_tsx())
+        elif lang_name == 'java':
+            import tree_sitter_java as m
+            return Language(m.language())
+        elif lang_name == 'go':
+            import tree_sitter_go as m
+            return Language(m.language())
+        elif lang_name == 'rust':
+            import tree_sitter_rust as m
+            return Language(m.language())
+        elif lang_name == 'c':
+            import tree_sitter_c as m
+            return Language(m.language())
+        elif lang_name == 'cpp':
+            import tree_sitter_cpp as m
+            return Language(m.language())
+        elif lang_name == 'c_sharp':
+            import tree_sitter_c_sharp as m
+            return Language(m.language())
+        elif lang_name == 'ruby':
+            import tree_sitter_ruby as m
+            return Language(m.language())
+    except (ImportError, AttributeError):
+        pass
+    return None
+
 
 class Source2Vec:
-    def __init__(self, repo_path, vector_size):
+    """Source code embeddings via tree-sitter AST parsing and CodeBERT.
+
+    Supports any language with a tree-sitter grammar installed. Unrecognised
+    file types are silently skipped, so a mixed-language repo works out of
+    the box as long as the relevant tree-sitter-* packages are installed.
+
+    CodeBERT outputs 768-dim vectors. If vector_size differs, the result is
+    truncated or zero-padded. For lossless embeddings set vector_size=768.
+    """
+
+    DEFAULT_MODEL = "microsoft/codebert-base"
+
+    def __init__(self, repo_path, vector_size, model_name=None):
         self.repo_path = repo_path
         self.vector_size = vector_size
-        self.code2vec_model = self._load_code2vec_model()
-
-    def _load_code2vec_model(self):
-        config = Config(set_defaults=True, load_from_args=False, config_dict={
-            'SAVED_MODEL_PATH': 'path/to/pretrained/code2vec_model'
-        })
-        model = Code2VecModel(config)
-        model.load()
-        return model
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        model_name = model_name or self.DEFAULT_MODEL
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModel.from_pretrained(model_name).to(self.device)
+        self.model.eval()
+        self._parser_cache = {}
 
     def generate(self):
-        java_files = self.get_java_files()
-        method_vectors = []
-
-        for file in java_files:
-            with open(file, 'r') as f:
-                content = f.read()
-
-            try:
-                tree = parse.parse(content)
-                for _, node in tree.filter(Node):
-                    if isinstance(node, javalang.tree.MethodDeclaration):
-                        method_vector = self.get_method_vector(node)
-                        method_vectors.append(method_vector)
-            except Exception:
-                pass
-
-        if not method_vectors:
+        snippets = self._extract_functions()
+        if not snippets:
             return np.zeros(self.vector_size)
+        embeddings = [self._embed(snippet) for snippet in snippets]
+        return self._resize(np.mean(embeddings, axis=0))
 
-        return np.mean(method_vectors, axis=0)
+    # ------------------------------------------------------------------
+    # AST extraction
+    # ------------------------------------------------------------------
 
-    def get_java_files(self):
-        java_files = []
+    def _extract_functions(self):
+        snippets = []
         for root, _, files in os.walk(self.repo_path):
-            for file in files:
-                if file.endswith('.java'):
-                    java_files.append(os.path.join(root, file))
-        return java_files
+            for fname in files:
+                ext = os.path.splitext(fname)[1].lower()
+                lang = EXTENSION_TO_LANGUAGE.get(ext)
+                if lang is None:
+                    continue
+                parser = self._get_parser(lang)
+                if parser is None:
+                    continue
+                fpath = os.path.join(root, fname)
+                try:
+                    with open(fpath, 'rb') as f:
+                        source = f.read()
+                    tree = parser.parse(source)
+                    snippets.extend(self._collect_functions(tree.root_node, source, lang))
+                except Exception:
+                    pass
+        return snippets
 
-    def get_method_vector(self, method_node):
-        method_text = self.get_method_text(method_node)
-        try:
-            prediction = self.code2vec_model.predict(method_text)
-            return prediction.code_vector
-        except Exception:
-            return np.zeros(self.vector_size)
+    def _collect_functions(self, root_node, source, lang):
+        target_types = FUNCTION_NODE_TYPES.get(lang, set())
+        results = []
+        stack = [root_node]
+        while stack:
+            node = stack.pop()
+            if node.type in target_types:
+                text = source[node.start_byte:node.end_byte].decode('utf-8', errors='replace')
+                results.append(text)
+            stack.extend(node.children)
+        return results
 
-    def get_method_text(self, method_node):
-        return method_node.name
+    def _get_parser(self, lang):
+        if lang not in self._parser_cache:
+            try:
+                from tree_sitter import Parser
+                language = _load_ts_language(lang)
+                self._parser_cache[lang] = Parser(language) if language else None
+            except Exception:
+                self._parser_cache[lang] = None
+        return self._parser_cache[lang]
+
+    # ------------------------------------------------------------------
+    # Embedding
+    # ------------------------------------------------------------------
+
+    def _embed(self, code_snippet):
+        inputs = self.tokenizer(
+            code_snippet,
+            return_tensors='pt',
+            truncation=True,
+            max_length=512,
+            padding=True,
+        ).to(self.device)
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+        return outputs.last_hidden_state[:, 0, :].squeeze().cpu().numpy()
+
+    def _resize(self, vector):
+        n = len(vector)
+        if n == self.vector_size:
+            return vector
+        if n > self.vector_size:
+            return vector[:self.vector_size]
+        return np.pad(vector, (0, self.vector_size - n))
