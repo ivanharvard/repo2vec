@@ -6,13 +6,13 @@ from .struct2vec import Struct2Vec
 from .source2vec import Source2Vec
 
 class Repo2Vec:
-    def __init__(self, repo_path, vector_size=128, combination_method='weighted_sum', weights=(1, 1, 1), normalize=True):
+    def __init__(self, repo_path, vector_size=128, combination_method='weighted_sum', weights=(1, 1, 1), normalize=True, metadata_files=None):
         self.repo_path = repo_path
         self.vector_size = vector_size
         self.combination_method = combination_method
         self.weights = weights
         self.normalize = normalize
-        self.meta2vec = Meta2Vec(repo_path, vector_size)
+        self.meta2vec = Meta2Vec(repo_path, vector_size, metadata_files=metadata_files)
         self.struct2vec = Struct2Vec(repo_path, vector_size)
         self.source2vec = Source2Vec(repo_path, vector_size)
 

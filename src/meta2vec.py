@@ -6,8 +6,14 @@ import torch
 from transformers import AutoTokenizer, AutoModel
 
 
+DEFAULT_METADATA_FILES = ['README.md', 'README.txt', 'README', 'DESCRIPTION', 'TOPICS']
+
+
 class Meta2Vec:
-    """Embeds repository metadata (README, description, topics) via mean-pooled BERT.
+    """Embeds repository metadata via mean-pooled BERT.
+
+    Reads text from `metadata_files` (paths relative to repo root) and the
+    repo directory name, then encodes them as a single embedding.
 
     Default model outputs 384 dims. Set vector_size=384 for lossless embeddings;
     smaller values truncate, larger values zero-pad.
@@ -15,9 +21,10 @@ class Meta2Vec:
 
     DEFAULT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
-    def __init__(self, repo_path, vector_size, model_name=None):
+    def __init__(self, repo_path, vector_size, metadata_files=None, model_name=None):
         self.repo_path = repo_path
         self.vector_size = vector_size
+        self.metadata_files = metadata_files if metadata_files is not None else DEFAULT_METADATA_FILES
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model_name = model_name or self.DEFAULT_MODEL
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -32,23 +39,12 @@ class Meta2Vec:
 
     def _extract_metadata(self):
         parts = [os.path.basename(self.repo_path)]
-        for fname in ('DESCRIPTION', 'TOPICS'):
+        for fname in self.metadata_files:
             fpath = os.path.join(self.repo_path, fname)
             if os.path.exists(fpath):
                 with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
                     parts.append(f.read().strip())
-        readme = self._get_readme()
-        if readme:
-            parts.append(readme)
         return ' '.join(parts)
-
-    def _get_readme(self):
-        for fname in ('README.md', 'README.txt', 'README'):
-            fpath = os.path.join(self.repo_path, fname)
-            if os.path.exists(fpath):
-                with open(fpath, 'r', encoding='utf-8', errors='ignore') as f:
-                    return f.read()
-        return None
 
     def _embed(self, text):
         inputs = self.tokenizer(
