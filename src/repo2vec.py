@@ -1,9 +1,9 @@
 # src/repo2vec.py
 
 import numpy as np
-from .meta2vec import Meta2Vec
-from .struct2vec import Struct2Vec
-from .source2vec import Source2Vec
+from meta2vec import Meta2Vec
+from struct2vec import Struct2Vec
+from source2vec import Source2Vec
 
 class Repo2Vec:
     def __init__(self, repo_path, vector_size=128, combination_method='weighted_sum', weights=(1, 1, 1), normalize=True, metadata_files=None):

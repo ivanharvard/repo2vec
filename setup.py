@@ -25,12 +25,18 @@ setup(
         "Programming Language :: Python :: 3.9",
     ],
     python_requires=">=3.9",
+    entry_points={
+        "console_scripts": [
+            "repo2vec=cli:main",
+        ],
+    },
     install_requires=[
         "networkx>=2.5",
         "torch>=2.0.0",
         "torch-geometric>=2.0.0",
         "transformers>=4.30.0",
         "tree-sitter>=0.22.0",
+        "typer>=0.9.0",
     ],
     extras_require={
         "languages": [
