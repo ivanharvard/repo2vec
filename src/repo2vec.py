@@ -45,7 +45,8 @@ class Repo2Vec:
         return combined_vector
 
     def _normalize(self, vector):
-        return vector / np.linalg.norm(vector)
+        norm = np.linalg.norm(vector)
+        return vector / norm if norm > 0 else vector
 
     def _concatenate(self, vectors):
         return np.concatenate(vectors)

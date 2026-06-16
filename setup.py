@@ -13,6 +13,7 @@ setup(
     long_description_content_type="text/markdown",
     url="https://github.com/ofrokon/repo2vec",
     packages=find_packages(where="src"),
+    py_modules=["cli", "repo2vec", "meta2vec", "source2vec", "struct2vec"],
     package_dir={"": "src"},
     classifiers=[
         "Development Status :: 3 - Alpha",

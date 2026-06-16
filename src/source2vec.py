@@ -1,6 +1,8 @@
 # src/source2vec.py
 
 import os
+from itertools import islice
+
 import numpy as np
 import torch
 from transformers import AutoTokenizer, AutoModel
@@ -72,8 +74,11 @@ def _load_ts_language(lang_name):
 
     try:
         module = __import__(module_name)
-        return getattr(module, fn_name)()
-    except (ImportError, AttributeError):
+        language = getattr(module, fn_name)()
+        from tree_sitter import Language
+
+        return language if isinstance(language, Language) else Language(language)
+    except (ImportError, AttributeError, TypeError):
         return None
 
 
@@ -90,9 +95,14 @@ class Source2Vec:
 
     DEFAULT_MODEL = "microsoft/codebert-base"
 
-    def __init__(self, repo_path, vector_size, model_name=None):
+    DEFAULT_MAX_SNIPPETS = 64
+    DEFAULT_BATCH_SIZE = 16
+
+    def __init__(self, repo_path, vector_size, model_name=None, max_snippets=None, batch_size=None):
         self.repo_path = repo_path
         self.vector_size = vector_size
+        self.max_snippets = self.DEFAULT_MAX_SNIPPETS if max_snippets is None else max_snippets
+        self.batch_size = self.DEFAULT_BATCH_SIZE if batch_size is None else batch_size
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model_name = model_name or self.DEFAULT_MODEL
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -104,8 +114,32 @@ class Source2Vec:
         snippets = self._extract_functions()
         if not snippets:
             return np.zeros(self.vector_size)
-        embeddings = [self._embed(snippet) for snippet in snippets]
+        snippets = self._sample_snippets(snippets)
+        embeddings = [
+            embedding
+            for batch in self._batched(snippets, self.batch_size)
+            for embedding in self._embed_batch(batch)
+        ]
         return self._resize(np.mean(embeddings, axis=0))
+
+    def _sample_snippets(self, snippets):
+        if self.max_snippets <= 0 or len(snippets) <= self.max_snippets:
+            return snippets
+        if self.max_snippets == 1:
+            return [snippets[len(snippets) // 2]]
+        last = len(snippets) - 1
+        return [
+            snippets[round(i * last / (self.max_snippets - 1))]
+            for i in range(self.max_snippets)
+        ]
+
+    def _batched(self, items, size):
+        iterator = iter(items)
+        while True:
+            batch = list(islice(iterator, size))
+            if not batch:
+                break
+            yield batch
 
     # ------------------------------------------------------------------
     # AST extraction
@@ -149,7 +183,15 @@ class Source2Vec:
             try:
                 from tree_sitter import Parser
                 language = _load_ts_language(lang)
-                self._parser_cache[lang] = Parser(language) if language else None
+                if language is None:
+                    self._parser_cache[lang] = None
+                else:
+                    parser = Parser()
+                    if hasattr(parser, 'set_language'):
+                        parser.set_language(language)
+                    else:
+                        parser.language = language
+                    self._parser_cache[lang] = parser
             except Exception:
                 self._parser_cache[lang] = None
         return self._parser_cache[lang]
@@ -158,9 +200,9 @@ class Source2Vec:
     # Embedding
     # ------------------------------------------------------------------
 
-    def _embed(self, code_snippet):
+    def _embed_batch(self, code_snippets):
         inputs = self.tokenizer(
-            code_snippet,
+            code_snippets,
             return_tensors='pt',
             truncation=True,
             max_length=512,
@@ -168,7 +210,7 @@ class Source2Vec:
         ).to(self.device)
         with torch.no_grad():
             outputs = self.model(**inputs)
-        return outputs.last_hidden_state[:, 0, :].squeeze().cpu().numpy()
+        return outputs.last_hidden_state[:, 0, :].cpu().numpy()
 
     def _resize(self, vector):
         n = len(vector)

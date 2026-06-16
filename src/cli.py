@@ -9,6 +9,7 @@ app = typer.Typer(add_completion=False)
 @app.command()
 def embed(
     path: str = typer.Argument(..., help="Path to a local repository"),
+    metadata: list[str] = typer.Option([], help="Extra metadata files (absolute paths or relative to repo)"),
     vector_size: int = typer.Option(128, help="Embedding dimension per component (meta, struct, source)"),
     combination_method: str = typer.Option("weighted_sum", help="concatenate | sum | average | median | weighted_sum"),
     normalize: bool = typer.Option(True, help="Normalize vectors before and after combining"),
@@ -24,6 +25,7 @@ def embed(
         vector_size=vector_size,
         combination_method=combination_method,
         normalize=normalize,
+        metadata_files=metadata if metadata else None,
     )
     embedding = r2v.generate_embedding()
 
